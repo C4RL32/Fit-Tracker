@@ -1,9 +1,66 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { CheckCircle, XCircle, Plus, Trash2, ChevronLeft, ChevronRight, Utensils, Zap, Edit2, Scale, Droplets, Minus, History, Smile, BookOpen, Check } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getAuth, signInAnonymously, onAuthStateChanged, type User } from 'firebase/auth';
 import { getFirestore, doc, collection, addDoc, deleteDoc, onSnapshot, query, serverTimestamp, setDoc, orderBy } from 'firebase/firestore';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer } from 'recharts';
+
+// Types
+type MealType = 'breakfast' | 'lunch' | 'dinner' | 'snack';
+type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'success' | 'ghost' | 'water' | 'tooth' | 'book';
+type ButtonSize = 'sm' | 'md' | 'lg';
+type ButtonType = 'button' | 'submit' | 'reset';
+
+interface Meal {
+  id: string;
+  type: MealType;
+  food: string;
+  proteinEstimate: number;
+  kcalEstimate: number;
+  quantity: number;
+  unit: string;
+  foodKey: string;
+  date: string;
+  adherence: boolean;
+  timestamp?: { seconds: number };
+}
+
+interface WeightLog {
+  id: string;
+  weight: number;
+  date: string;
+  timestamp: number;
+  userId?: string;
+}
+
+interface WaterLog {
+  id: string;
+  date: string;
+  amount: number;
+  timestamp: number;
+}
+
+interface ToothLog {
+  id: string;
+  date: string;
+  timestamp: number;
+}
+
+interface BookLog {
+  id: string;
+  date: string;
+  timestamp: number;
+}
+
+interface MealState {
+  type: MealType;
+  foodKey: keyof typeof FOOD_DB;
+  quantity: number;
+  customFood: string;
+  customProtein: number;
+  customKcal: number;
+  adherence: boolean;
+}
 
 // Reemplaza la parte de __firebase_config con esto:
 const firebaseConfig = {
@@ -56,7 +113,7 @@ const FOOD_DB = {
   'custom': { name: 'Otro (Personalizado)', ratio: 1, kcal_ratio: 0, unit: 'n/a', category: 'Otros' }
 };
 
-const DEFAULT_MEAL_STATE = {
+const DEFAULT_MEAL_STATE: MealState = {
   type: 'breakfast',
   foodKey: 'pollo',
   quantity: 100,
@@ -68,14 +125,25 @@ const DEFAULT_MEAL_STATE = {
 
 // --- Helper Components ---
 
-const Button = ({ children, onClick, variant = 'primary', className = '', disabled = false, type = 'button', size='md' }) => {
+interface ButtonProps {
+  children: React.ReactNode;
+  onClick?: (() => void) | ((e: React.FormEvent) => void);
+  variant?: ButtonVariant;
+  className?: string;
+  disabled?: boolean;
+  type?: ButtonType;
+  size?: ButtonSize;
+  id?: string;
+}
+
+const Button = ({ children, onClick, variant = 'primary', className = '', disabled = false, type = 'button', size = 'md', id }: ButtonProps) => {
   const baseStyle = "rounded-lg font-medium transition-all duration-200 flex items-center justify-center gap-2 active:scale-95";
-  const sizes = {
+  const sizes: Record<ButtonSize, string> = {
       sm: "px-3 py-1.5 text-xs",
       md: "px-4 py-2 text-sm",
       lg: "px-6 py-3 text-lg"
   };
-  const variants = {
+  const variants: Record<ButtonVariant, string> = {
     primary: "bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-900/20",
     secondary: "bg-slate-700 hover:bg-slate-600 text-slate-200",
     danger: "bg-red-500/10 hover:bg-red-500/20 text-red-400",
@@ -88,6 +156,7 @@ const Button = ({ children, onClick, variant = 'primary', className = '', disabl
 
   return (
     <button 
+      id={id}
       type={type}
       onClick={onClick} 
       disabled={disabled}
@@ -98,21 +167,30 @@ const Button = ({ children, onClick, variant = 'primary', className = '', disabl
   );
 };
 
-const Card = ({ children, className = '' }) => (
+interface CardProps {
+  children: React.ReactNode;
+  className?: string;
+}
+
+const Card = ({ children, className = '' }: CardProps) => (
   <div className={`bg-slate-800 border border-slate-700 rounded-xl shadow-xl overflow-hidden ${className}`}>
     {children}
   </div>
 );
 
-const Badge = ({ type }) => {
-  const styles = {
+interface BadgeProps {
+  type: MealType;
+}
+
+const Badge = ({ type }: BadgeProps) => {
+  const styles: Record<MealType, string> = {
     breakfast: "bg-orange-500/10 text-orange-400 border-orange-500/20",
     lunch: "bg-blue-500/10 text-blue-400 border-blue-500/20",
     dinner: "bg-purple-500/10 text-purple-400 border-purple-500/20",
     snack: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
   };
   
-  const labels = {
+  const labels: Record<MealType, string> = {
     breakfast: "Desayuno",
     lunch: "Almuerzo",
     dinner: "Cena",
@@ -129,24 +207,24 @@ const Badge = ({ type }) => {
 // --- Main Application Component ---
 
 export default function FitTracker() {
-  const [user, setUser] = useState(null);
+  const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  const [meals, setMeals] = useState([]);
-  const [weightLogs, setWeightLogs] = useState([]);
-  const [waterLogs, setWaterLogs] = useState([]); 
-  const [toothLogs, setToothLogs] = useState([]);
-  const [bookLogs, setBookLogs] = useState([]); // New Book State
+  const [meals, setMeals] = useState<Meal[]>([]);
+  const [weightLogs, setWeightLogs] = useState<WeightLog[]>([]);
+  const [waterLogs, setWaterLogs] = useState<WaterLog[]>([]); 
+  const [toothLogs, setToothLogs] = useState<ToothLog[]>([]);
+  const [bookLogs, setBookLogs] = useState<BookLog[]>([]);
   const [selectedDate, setSelectedDate] = useState(new Date());
   
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isWeightModalOpen, setIsWeightModalOpen] = useState(false);
   const [showWeightHistory, setShowWeightHistory] = useState(false); 
-  const [editingMeal, setEditingMeal] = useState(null);
-  const [newMeal, setNewMeal] = useState(DEFAULT_MEAL_STATE);
+  const [editingMeal, setEditingMeal] = useState<Meal | null>(null);
+  const [newMeal, setNewMeal] = useState<MealState>(DEFAULT_MEAL_STATE);
   const [newWeight, setNewWeight] = useState('');
   
-  const [view, setView] = useState('daily'); 
+  const [view, setView] = useState<'daily' | 'report'>('daily'); 
 
   // Auth & Data Fetching
   useEffect(() => {
@@ -158,8 +236,12 @@ export default function FitTracker() {
         // 1. Fetch Meals
         const qMeals = query(collection(db, `artifacts/${appId}/users/${currentUser.uid}/meals`));
         const subMeals = onSnapshot(qMeals, (snap) => {
-          const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data(), timestamp: doc.data().timestamp || {seconds:0} }));
-          data.sort((a,b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.timestamp.seconds - a.timestamp.seconds));
+          const data: Meal[] = snap.docs.map(doc => ({ 
+            id: doc.id, 
+            ...doc.data() as Omit<Meal, 'id'>, 
+            timestamp: (doc.data().timestamp as {seconds: number}) || {seconds:0} 
+          }));
+          data.sort((a,b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0)));
           console.log('📥 Comidas recibidas de Firebase:', data.length, 'registros');
           setMeals(data);
         }, (error) => {
@@ -169,7 +251,7 @@ export default function FitTracker() {
         // 2. Fetch Weight
         const qWeight = query(collection(db, `artifacts/${appId}/users/${currentUser.uid}/weight_logs`), orderBy('date', 'asc'));
         const subWeight = onSnapshot(qWeight, (snap) => {
-          const data = snap.docs.map(d => ({id: d.id, ...d.data()}));
+          const data: WeightLog[] = snap.docs.map(d => ({id: d.id, ...d.data()} as WeightLog));
           console.log('📥 Pesos recibidos de Firebase:', data.length, 'registros');
           setWeightLogs(data);
         }, (error) => {
@@ -179,7 +261,7 @@ export default function FitTracker() {
         // 3. Fetch Water
         const qWater = query(collection(db, `artifacts/${appId}/users/${currentUser.uid}/water_logs`));
         const subWater = onSnapshot(qWater, (snap) => {
-          const data = snap.docs.map(d => ({id: d.id, ...d.data()}));
+          const data: WaterLog[] = snap.docs.map(d => ({id: d.id, ...d.data()} as WaterLog));
           console.log('📥 Agua recibida de Firebase:', data.length, 'registros');
           setWaterLogs(data);
         }, (error) => {
@@ -189,7 +271,7 @@ export default function FitTracker() {
         // 4. Fetch Teeth Logs
         const qTeeth = query(collection(db, `artifacts/${appId}/users/${currentUser.uid}/tooth_logs`));
         const subTeeth = onSnapshot(qTeeth, (snap) => {
-          const data = snap.docs.map(d => ({id: d.id, ...d.data()}));
+          const data: ToothLog[] = snap.docs.map(d => ({id: d.id, ...d.data()} as ToothLog));
           console.log('📥 Cepillados recibidos de Firebase:', data.length, 'registros');
           setToothLogs(data);
         }, (error) => {
@@ -199,7 +281,7 @@ export default function FitTracker() {
         // 5. Fetch Book Logs
         const qBook = query(collection(db, `artifacts/${appId}/users/${currentUser.uid}/book_logs`));
         const subBook = onSnapshot(qBook, (snap) => {
-          const data = snap.docs.map(d => ({id: d.id, ...d.data()}));
+          const data: BookLog[] = snap.docs.map(d => ({id: d.id, ...d.data()} as BookLog));
           console.log('📥 Lecturas recibidas de Firebase:', data.length, 'registros');
           setBookLogs(data);
         }, (error) => {
@@ -209,15 +291,14 @@ export default function FitTracker() {
         setLoading(false);
         return () => { subMeals(); subWeight(); subWater(); subTeeth(); subBook(); };
       } else {
-        if (typeof __initial_auth_token !== 'undefined') signInWithCustomToken(auth, __initial_auth_token);
-        else signInAnonymously(auth);
+        signInAnonymously(auth);
       }
     });
     return () => unsubscribeAuth();
   }, []);
 
   // --- Calculations ---
-  const formatDateKey = (date) => date.toISOString().split('T')[0];
+  const formatDateKey = (date: Date): string => date.toISOString().split('T')[0];
   const currentDayKey = formatDateKey(selectedDate);
   const currentDayMeals = meals.filter(m => m.date === currentDayKey);
   const currentWater = waterLogs.filter(w => w.date === currentDayKey).reduce((acc, curr) => acc + curr.amount, 0);
@@ -228,7 +309,7 @@ export default function FitTracker() {
     if (newMeal.foodKey === 'custom') {
       return { protein: Number(newMeal.customProtein) || 0, kcal: Number(newMeal.customKcal) || 0 };
     }
-    const food = FOOD_DB[newMeal.foodKey];
+    const food = FOOD_DB[newMeal.foodKey as keyof typeof FOOD_DB];
     if (!food) return { protein: 0, kcal: 0 };
     return {
         protein: Math.round(newMeal.quantity * food.ratio),
@@ -236,16 +317,16 @@ export default function FitTracker() {
     };
   }, [newMeal.foodKey, newMeal.quantity, newMeal.customProtein, newMeal.customKcal]);
   
-  const selectedFoodUnit = FOOD_DB[newMeal.foodKey]?.unit || 'gramos';
+  const selectedFoodUnit = FOOD_DB[newMeal.foodKey as keyof typeof FOOD_DB]?.unit || 'gramos';
 
   // --- Actions ---
 
-  const openModal = (mealToEdit = null) => {
+  const openModal = (mealToEdit: Meal | null = null) => {
     if (mealToEdit) {
       setEditingMeal(mealToEdit);
       setNewMeal({
         type: mealToEdit.type,
-        foodKey: 'custom',
+        foodKey: 'custom' as keyof typeof FOOD_DB,
         quantity: 0,
         customFood: mealToEdit.food,
         customProtein: mealToEdit.proteinEstimate,
@@ -259,14 +340,16 @@ export default function FitTracker() {
     setIsModalOpen(true);
   };
 
-  const handleSaveMeal = async (e) => {
+  const handleSaveMeal = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
+    
+    const userUid = user.uid;
     const mealToSave = {
       type: newMeal.type,
       adherence: newMeal.adherence,
       date: currentDayKey,
-      food: newMeal.foodKey === 'custom' ? newMeal.customFood : FOOD_DB[newMeal.foodKey].name,
+      food: newMeal.foodKey === 'custom' ? newMeal.customFood : FOOD_DB[newMeal.foodKey as keyof typeof FOOD_DB].name,
       proteinEstimate: calculatedNutrition.protein,
       kcalEstimate: calculatedNutrition.kcal,
       quantity: newMeal.quantity,
@@ -275,10 +358,10 @@ export default function FitTracker() {
     };
     try {
       if (editingMeal) {
-        await setDoc(doc(db, `artifacts/${appId}/users/${user.uid}/meals`, editingMeal.id), { ...editingMeal, ...mealToSave });
+        await setDoc(doc(db, `artifacts/${appId}/users/${userUid}/meals`, editingMeal.id), { ...editingMeal, ...mealToSave });
         console.log('✅ Comida actualizada en Firebase:', mealToSave);
       } else {
-        const docRef = await addDoc(collection(db, `artifacts/${appId}/users/${user.uid}/meals`), { ...mealToSave, timestamp: serverTimestamp(), userId: user.uid });
+        const docRef = await addDoc(collection(db, `artifacts/${appId}/users/${userUid}/meals`), { ...mealToSave, timestamp: serverTimestamp(), userId: userUid });
         console.log('✅ Comida guardada en Firebase:', { id: docRef.id, ...mealToSave });
       }
       setIsModalOpen(false);
@@ -287,7 +370,8 @@ export default function FitTracker() {
     }
   };
 
-  const handleDeleteMeal = async (id) => {
+  const handleDeleteMeal = async (id: string) => {
+    if (!user) return;
     try {
       await deleteDoc(doc(db, `artifacts/${appId}/users/${user.uid}/meals`, id));
       console.log('✅ Comida eliminada de Firebase:', id);
@@ -298,6 +382,7 @@ export default function FitTracker() {
 
   // --- Water Actions ---
   const addWater = async () => {
+      if (!user) return;
       try {
         const docRef = await addDoc(collection(db, `artifacts/${appId}/users/${user.uid}/water_logs`), {
             date: currentDayKey, amount: 1, timestamp: serverTimestamp()
@@ -309,6 +394,7 @@ export default function FitTracker() {
   };
 
   const removeWater = async () => {
+      if (!user) return;
       const todaysLogs = waterLogs.filter(w => w.date === currentDayKey).sort((a,b) => b.timestamp - a.timestamp);
       if(todaysLogs.length > 0) {
           try {
@@ -322,19 +408,19 @@ export default function FitTracker() {
 
   // --- Tooth Actions ---
   const toggleTooth = async () => {
-    if (currentTeeth < 3) {
-      try {
-        const docRef = await addDoc(collection(db, `artifacts/${appId}/users/${user.uid}/tooth_logs`), {
+    if (!user || currentTeeth >= 3) return;
+    try {
+      const docRef = await addDoc(collection(db, `artifacts/${appId}/users/${user.uid}/tooth_logs`), {
           date: currentDayKey, timestamp: serverTimestamp()
         });
-        console.log('✅ Cepillado guardado en Firebase:', { id: docRef.id, date: currentDayKey });
-      } catch (error) {
-        console.error('❌ Error al guardar cepillado:', error);
-      }
+      console.log('✅ Cepillado guardado en Firebase:', { id: docRef.id, date: currentDayKey });
+    } catch (error) {
+      console.error('❌ Error al guardar cepillado:', error);
     }
   };
 
   const removeTooth = async () => {
+    if (!user) return;
     const todaysLogs = toothLogs.filter(t => t.date === currentDayKey).sort((a,b) => b.timestamp - a.timestamp);
     if(todaysLogs.length > 0) {
       try {
@@ -348,6 +434,7 @@ export default function FitTracker() {
 
   // --- Book Actions ---
   const toggleBook = async () => {
+    if (!user) return;
     if (currentBook) {
         // Remove logs for today
         const todaysLogs = bookLogs.filter(b => b.date === currentDayKey);
@@ -373,12 +460,13 @@ export default function FitTracker() {
   };
 
   // --- Weight Actions ---
-  const handleSaveWeight = async (e) => {
+  const handleSaveWeight = async (e: React.FormEvent) => {
       e.preventDefault();
       if(!user || !newWeight) return;
+      const userUid = user.uid;
       try {
-        const docRef = await addDoc(collection(db, `artifacts/${appId}/users/${user.uid}/weight_logs`), {
-            weight: parseFloat(newWeight), date: currentDayKey, timestamp: serverTimestamp(), userId: user.uid
+        const docRef = await addDoc(collection(db, `artifacts/${appId}/users/${userUid}/weight_logs`), {
+            weight: parseFloat(newWeight), date: currentDayKey, timestamp: serverTimestamp(), userId: userUid
         });
         console.log('✅ Peso guardado en Firebase:', { id: docRef.id, weight: parseFloat(newWeight), date: currentDayKey });
         setIsWeightModalOpen(false); 
@@ -387,7 +475,8 @@ export default function FitTracker() {
         console.error('❌ Error al guardar peso:', error);
       }
   };
-  const deleteWeight = async (id) => {
+  const deleteWeight = async (id: string) => {
+    if (!user) return;
     try {
       await deleteDoc(doc(db, `artifacts/${appId}/users/${user.uid}/weight_logs`, id));
       console.log('✅ Peso eliminado de Firebase:', id);
@@ -398,7 +487,7 @@ export default function FitTracker() {
   
   // --- Report Gen ---
   const generateWeeklyReport = () => {
-    const report = meals.slice(0, 30).reduce((acc, meal) => {
+    const report = meals.slice(0, 30).reduce((acc: Record<string, { totalProtein: number; totalKcal: number; cheats: number; meals: Meal[] }>, meal) => {
       if (!acc[meal.date]) acc[meal.date] = { totalProtein: 0, totalKcal: 0, cheats: 0, meals: [] };
       acc[meal.date].totalProtein += Number(meal.proteinEstimate) || 0;
       acc[meal.date].totalKcal += Number(meal.kcalEstimate) || 0;
@@ -407,13 +496,13 @@ export default function FitTracker() {
       return acc;
     }, {});
     
-    const waterStats = waterLogs.reduce((acc, log) => { acc[log.date] = (acc[log.date] || 0) + 1; return acc; }, {});
-    const toothStats = toothLogs.reduce((acc, log) => { acc[log.date] = (acc[log.date] || 0) + 1; return acc; }, {});
-    const bookStats = bookLogs.reduce((acc, log) => { acc[log.date] = true; return acc; }, {}); // Map of dates read
+    const waterStats = waterLogs.reduce((acc: Record<string, number>, log) => { acc[log.date] = (acc[log.date] || 0) + 1; return acc; }, {});
+    const toothStats = toothLogs.reduce((acc: Record<string, number>, log) => { acc[log.date] = (acc[log.date] || 0) + 1; return acc; }, {});
+    const bookStats = bookLogs.reduce((acc: Record<string, boolean>, log) => { acc[log.date] = true; return acc; }, {}); // Map of dates read
 
     const sortedWeights = [...weightLogs].sort((a,b) => b.timestamp - a.timestamp);
     const currentW = sortedWeights[0]?.weight;
-    const wDiff = sortedWeights.length > 1 ? (currentW - sortedWeights[1].weight).toFixed(2) : 0;
+    const wDiff = sortedWeights.length > 1 ? Number((currentW - sortedWeights[1].weight).toFixed(2)) : 0;
 
     let txt = `📋 *REPORTE FIT-TRACKER v1.6*\nID: ${user?.uid.slice(0,5)}...\n`;
     if(currentW) txt += `⚖️ Peso: ${currentW}kg (${wDiff > 0 ? '+' : ''}${wDiff})\n\n`;
@@ -425,7 +514,7 @@ export default function FitTracker() {
       const b = bookStats[date] ? "📖 Leído" : "No leído";
       const status = d.cheats === 0 ? "✅" : "⚠️";
       txt += `📅 *${date}* ${status}\n   🥩 ${d.totalProtein}g Prot | 🔥 ${d.totalKcal} kcal\n   💧 ${w} vasos | 🦷 ${t}/3 | ${b}\n`;
-      if (d.cheats > 0) txt += `   ❌ Cheat: ${d.meals.filter(m => !m.adherence).map(m => m.food).join(", ")}\n`;
+      if (d.cheats > 0) txt += `   ❌ Cheat: ${d.meals.filter((m: Meal) => !m.adherence).map((m: Meal) => m.food).join(", ")}\n`;
       txt += "\n";
     });
     
@@ -642,27 +731,27 @@ export default function FitTracker() {
             </div>
             <form onSubmit={handleSaveMeal} className="space-y-4">
               <div className="grid grid-cols-4 gap-2">
-                  {['breakfast', 'lunch', 'dinner', 'snack'].map(t => (
+                  {(['breakfast', 'lunch', 'dinner', 'snack'] as MealType[]).map(t => (
                     <button key={t} type="button" onClick={() => setNewMeal({...newMeal, type: t})} className={`text-xs py-2 rounded-md border ${newMeal.type === t ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-700 border-slate-600 text-slate-400'}`}>
                       {t === 'breakfast' ? 'Desayuno' : t === 'lunch' ? 'Almuerzo' : t === 'dinner' ? 'Cena' : 'Snack'}
                     </button>
                   ))}
               </div>
-              <select className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-white" value={newMeal.foodKey} onChange={(e) => setNewMeal({...newMeal, foodKey: e.target.value})}>
-                  {Object.keys(FOOD_DB).map(k => <option key={k} value={k}>{FOOD_DB[k].name}</option>)}
+              <select className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-white" value={newMeal.foodKey} onChange={(e) => setNewMeal({...newMeal, foodKey: e.target.value as keyof typeof FOOD_DB})}>
+                  {Object.keys(FOOD_DB).map(k => <option key={k} value={k}>{FOOD_DB[k as keyof typeof FOOD_DB].name}</option>)}
               </select>
               {newMeal.foodKey === 'custom' ? (
                 <div className="space-y-2">
                     <input type="text" placeholder="Nombre" className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-white" value={newMeal.customFood} onChange={(e) => setNewMeal({...newMeal, customFood: e.target.value})} />
                     <div className="grid grid-cols-2 gap-2">
-                        <input type="number" placeholder="Prot (g)" className="bg-slate-900 border border-slate-700 rounded-lg p-3 text-white" value={newMeal.customProtein} onChange={(e) => setNewMeal({...newMeal, customProtein: e.target.value})} />
-                        <input type="number" placeholder="Kcal" className="bg-slate-900 border border-slate-700 rounded-lg p-3 text-white" value={newMeal.customKcal} onChange={(e) => setNewMeal({...newMeal, customKcal: e.target.value})} />
+                        <input type="number" placeholder="Prot (g)" className="bg-slate-900 border border-slate-700 rounded-lg p-3 text-white" value={newMeal.customProtein} onChange={(e) => setNewMeal({...newMeal, customProtein: Number(e.target.value) || 0})} />
+                        <input type="number" placeholder="Kcal" className="bg-slate-900 border border-slate-700 rounded-lg p-3 text-white" value={newMeal.customKcal} onChange={(e) => setNewMeal({...newMeal, customKcal: Number(e.target.value) || 0})} />
                     </div>
                 </div>
               ) : (
                 <div className="grid grid-cols-2 gap-2">
                     <div className="relative">
-                        <input type="number" className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-white" value={newMeal.quantity} onChange={(e) => setNewMeal({...newMeal, quantity: e.target.value})} />
+                        <input type="number" className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-white" value={newMeal.quantity} onChange={(e) => setNewMeal({...newMeal, quantity: Number(e.target.value) || 0})} />
                         <span className="absolute right-3 top-3 text-xs text-slate-500">{selectedFoodUnit}</span>
                     </div>
                     <div className="flex flex-col justify-center text-xs text-slate-400 pl-2">
@@ -674,7 +763,7 @@ export default function FitTracker() {
                <button type="button" onClick={() => setNewMeal({...newMeal, adherence: !newMeal.adherence})} className={`w-full py-2 rounded-lg flex items-center justify-center gap-2 ${newMeal.adherence ? 'bg-emerald-600/20 text-emerald-400' : 'bg-red-600/20 text-red-400'}`}>
                   {newMeal.adherence ? <><CheckCircle className="w-4 h-4"/> En Plan</> : <><XCircle className="w-4 h-4"/> Cheat Meal</>}
                </button>
-              <Button type="submit" className="w-full">Guardar</Button>
+              <Button type="submit" onClick={handleSaveMeal} className="w-full">Guardar</Button>
             </form>
           </div>
         </div>
