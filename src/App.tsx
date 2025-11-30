@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { CheckCircle, XCircle, Plus, Trash2, ChevronLeft, ChevronRight, Utensils, Zap, Edit2, Scale, Droplets, Minus, History, Smile, BookOpen, Check } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged, type User } from 'firebase/auth';
+import { getAuth, signInAnonymously, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
+import type { User } from 'firebase/auth';
 import { getFirestore, doc, collection, addDoc, deleteDoc, onSnapshot, query, serverTimestamp, setDoc, orderBy } from 'firebase/firestore';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer } from 'recharts';
 
@@ -230,7 +231,7 @@ export default function FitTracker() {
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
       if (currentUser) {
-        console.log('🔐 Usuario autenticado en Firebase:', { uid: currentUser.uid, isAnonymous: currentUser.isAnonymous });
+        console.log('🔐 Usuario autenticado en Firebase:', { uid: currentUser.uid, isAnonymous: currentUser.isAnonymous, email: currentUser.email });
         setUser(currentUser);
         
         // 1. Fetch Meals
@@ -291,12 +292,50 @@ export default function FitTracker() {
         setLoading(false);
         return () => { subMeals(); subWeight(); subWater(); subTeeth(); subBook(); };
       } else {
-        signInAnonymously(auth);
+        setUser(null);
+        setLoading(false);
       }
     });
     return () => unsubscribeAuth();
   }, []);
 
+
+  // --- Auth Actions ---
+  const handleGoogleLogin = async () => {
+    const provider = new GoogleAuthProvider();
+    try {
+      const result = await signInWithPopup(auth, provider);
+      console.log('✅ Login con Google exitoso:', result.user.email);
+    } catch (error) {
+      console.error("❌ Error en login con Google:", error);
+      if (error && typeof error === 'object' && 'code' in error) {
+        const firebaseError = error as { code: string; message?: string };
+        if (firebaseError.code === 'auth/popup-closed-by-user') {
+          console.log('El usuario cerró la ventana de autenticación');
+        } else if (firebaseError.code === 'auth/popup-blocked') {
+          console.error('El popup fue bloqueado por el navegador');
+        }
+      }
+    }
+  };
+
+  const handleAnonymousLogin = async () => {
+    try {
+      await signInAnonymously(auth);
+      console.log('✅ Login anónimo exitoso');
+    } catch (error) {
+      console.error('❌ Error en login anónimo:', error);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      console.log('✅ Logout exitoso');
+    } catch (error) {
+      console.error('❌ Error en logout:', error);
+    }
+  };
   // --- Calculations ---
   const formatDateKey = (date: Date): string => date.toISOString().split('T')[0];
   const currentDayKey = formatDateKey(selectedDate);
@@ -526,6 +565,52 @@ export default function FitTracker() {
   
   if (loading) return <div className="flex items-center justify-center h-screen bg-slate-900 text-blue-400 font-mono">Cargando v1.6...</div>;
 
+  // Login Screen
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-slate-900 text-slate-200 font-sans selection:bg-blue-500/30 flex items-center justify-center">
+        <Card className="p-8 max-w-md w-full mx-4">
+          <div className="text-center space-y-6">
+            <div className="flex justify-center">
+              <Zap className="text-blue-500 w-16 h-16" />
+            </div>
+            <div>
+              <h1 className="font-bold text-2xl text-white mb-2">Fit<span className="text-blue-500">Tracker</span></h1>
+              <p className="text-slate-400 text-sm">Inicia sesión para comenzar a rastrear tu progreso</p>
+            </div>
+            <div className="space-y-3">
+              <Button 
+                onClick={handleGoogleLogin} 
+                variant="primary" 
+                className="w-full"
+                size="lg"
+              >
+                <svg className="w-5 h-5" viewBox="0 0 24 24">
+                  <path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                  <path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                  <path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+                  <path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                </svg>
+                Continuar con Google
+              </Button>
+              <Button 
+                onClick={handleAnonymousLogin} 
+                variant="secondary" 
+                className="w-full"
+                size="lg"
+              >
+                Continuar como invitado
+              </Button>
+            </div>
+            <p className="text-xs text-slate-500">
+              Al continuar, aceptas nuestros términos de servicio
+            </p>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-900 text-slate-200 font-sans selection:bg-blue-500/30 pb-20">
       
@@ -536,7 +621,33 @@ export default function FitTracker() {
             <Zap className="text-blue-500 w-6 h-6" />
             <h1 className="font-bold text-lg md:text-xl tracking-tight">Fit<span className="text-blue-500">Tracker</span></h1>
           </div>
-          <div className="text-xs font-mono text-slate-500">v1.6</div>
+          <div className="flex items-center gap-3">
+            {user && (
+              <div className="flex items-center gap-2 text-xs">
+                {user.photoURL ? (
+                  <img 
+                    src={user.photoURL} 
+                    alt="Perfil" 
+                    className="w-8 h-8 rounded-full border-2 border-slate-600 object-cover"
+                  />
+                ) : (
+                  <div className="w-8 h-8 rounded-full bg-slate-700 border-2 border-slate-600 flex items-center justify-center text-slate-300 font-semibold text-xs">
+                    {user.email ? user.email.charAt(0).toUpperCase() : '?'}
+                  </div>
+                )}
+                {user.email && (
+                  <span className="text-slate-400 hidden md:inline">{user.email}</span>
+                )}
+                {user.isAnonymous && (
+                  <span className="text-slate-500 hidden md:inline">Modo Anónimo</span>
+                )}
+                <Button variant="ghost" size="sm" onClick={handleLogout}>
+                  Salir
+                </Button>
+              </div>
+            )}
+            <div className="text-xs font-mono text-slate-500">v1.6</div>
+          </div>
         </div>
       </header>
 
